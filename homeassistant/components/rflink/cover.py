@@ -1,11 +1,22 @@
 """Support for Rflink Cover devices."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import voluptuous as vol
 
-from homeassistant.components.cover import PLATFORM_SCHEMA, CoverEntity
+from homeassistant.components.cover import (
+    ATTR_TILT_POSITION,
+    PLATFORM_SCHEMA,
+    SUPPORT_CLOSE,
+    SUPPORT_CLOSE_TILT,
+    SUPPORT_OPEN,
+    SUPPORT_OPEN_TILT,
+    SUPPORT_SET_TILT_POSITION,
+    SUPPORT_STOP,
+    CoverEntity,
+)
 from homeassistant.const import CONF_DEVICES, CONF_NAME, CONF_TYPE, STATE_OPEN
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
@@ -31,6 +42,7 @@ PARALLEL_UPDATES = 0
 
 TYPE_STANDARD = "standard"
 TYPE_INVERTED = "inverted"
+CONF_INV_TILT = "invert_tilt"
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -42,6 +54,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
                 cv.string: {
                     vol.Optional(CONF_NAME): cv.string,
                     vol.Optional(CONF_TYPE): vol.Any(TYPE_STANDARD, TYPE_INVERTED),
+                    vol.Optional(CONF_INV_TILT, default=False): cv.boolean,
                     vol.Optional(CONF_ALIASES, default=[]): vol.All(
                         cv.ensure_list, [cv.string]
                     ),
@@ -102,7 +115,6 @@ def devices_from_config(domain_config):
             entity_type = config.pop(CONF_TYPE)
         else:
             entity_type = entity_type_for_device_id(device_id)
-
         entity_class = entity_class_for_type(entity_type)
         device_config = dict(domain_config[CONF_DEVICE_DEFAULTS], **config)
         device = entity_class(device_id, **device_config)
@@ -123,6 +135,10 @@ async def async_setup_platform(
 
 class RflinkCover(RflinkCommand, CoverEntity, RestoreEntity):
     """Rflink entity which can switch on/stop/off (eg: cover)."""
+
+    def __init__(self, device_id, **kwargs):
+        self.inverted_tilt = kwargs.pop(CONF_INV_TILT)
+        super().__init__(device_id, **kwargs)
 
     async def async_added_to_hass(self):
         """Restore RFLink cover state (OPEN/CLOSE)."""
@@ -155,6 +171,18 @@ class RflinkCover(RflinkCommand, CoverEntity, RestoreEntity):
         """Return True because covers can be stopped midway."""
         return True
 
+    @property
+    def supported_features(self):
+        """Flag supported features."""
+        return (
+            SUPPORT_OPEN
+            | SUPPORT_CLOSE
+            | SUPPORT_STOP
+            | SUPPORT_SET_TILT_POSITION
+            | SUPPORT_OPEN_TILT
+            | SUPPORT_CLOSE_TILT
+        )
+
     async def async_close_cover(self, **kwargs):
         """Turn the device close."""
         await self._async_handle_command("close_cover")
@@ -166,6 +194,23 @@ class RflinkCover(RflinkCommand, CoverEntity, RestoreEntity):
     async def async_stop_cover(self, **kwargs):
         """Turn the device stop."""
         await self._async_handle_command("stop_cover")
+
+    async def async_set_cover_tilt_position(self, **kwargs):
+        """Move the cover tilt to a specific position."""
+        pos = kwargs[ATTR_TILT_POSITION]
+        if self.inverted_tilt:
+            pos = 100 - pos
+        await self._async_handle_command("tilt", pos)
+
+    async def async_close_cover_tilt(self, **kwargs):
+        """Close the cover tilt."""
+        val = 100 if self.inverted_tilt else 0
+        await self._async_handle_command("tilt", val)
+
+    async def async_open_cover_tilt(self, **kwargs):
+        await self._async_handle_command("tilt", 100 if self.inverted_tilt else 0)
+        await asyncio.sleep(2)
+        await self._async_handle_command("tilt", 25 if self.inverted_tilt else 75)
 
 
 class InvertedRflinkCover(RflinkCover):

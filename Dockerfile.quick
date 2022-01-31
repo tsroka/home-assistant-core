@@ -1,0 +1,18 @@
+ARG BUILD_FROM
+FROM homeassistant/home-assistant:stable
+
+# Synchronize with homeassistant/core.py:async_stop
+ENV \
+    S6_SERVICES_GRACETIME=220000
+
+WORKDIR /usr/src
+ENV WHEELS_LINKS=https://wheels.home-assistant.io/alpine-3.13/armv7/
+## Setup Home Assistant
+COPY ./homeassistant/components/rflink homeassistant/homeassistant/components/rflink 
+RUN \
+  python3 -m compileall homeassistant/homeassistant/components/rflink
+
+# Home Assistant S6-Overlay
+# COPY rootfs /
+
+WORKDIR /config

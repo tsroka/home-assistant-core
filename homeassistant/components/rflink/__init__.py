@@ -334,6 +334,7 @@ class RflinkDevice(Entity):
         # Rflink specific attributes for every component type
         self._initial_event = initial_event
         self._device_id = device_id
+        self._attr_unique_id = device_id
         if name:
             self._name = name
         else:
@@ -531,7 +532,16 @@ class RflinkCommand(RflinkDevice):
         elif command == "stop_cover":
             cmd = "STOP"
             self._state = True
-
+        elif command == "tilt":
+            val = args[0]
+            # 50 -> 0;
+            val = (val - 50) // 5
+            if val < 0:
+                val = -val
+            else:
+                val = 128 + val
+            cmd = f"TILT_{val}"
+            self._state = True
         # Send initial command and queue repetitions.
         # This allows the entity state to be updated quickly and not having to
         # wait for all repetitions to be sent
