@@ -241,6 +241,13 @@ class RflinkCommand(RflinkDevice):
             cmd = "STOP"
             self._state = True
 
+        elif command == "tilt":
+            val = args[0]
+            val = (val - 50) // 5
+            val = -val if val < 0 else 128 + val
+            cmd = f"TILT_{val}"
+            self._state = True
+
         # Send initial command and queue repetitions.
         # This allows the entity state to be updated quickly and not having to
         # wait for all repetitions to be sent
