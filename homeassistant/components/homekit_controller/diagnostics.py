@@ -15,7 +15,7 @@ from .connection import HKDevice
 from .const import KNOWN_DEVICES
 
 REDACTED_CHARACTERISTICS = [
-    CharacteristicsTypes.get_uuid(CharacteristicsTypes.SERIAL_NUMBER),
+    CharacteristicsTypes.SERIAL_NUMBER,
 ]
 
 REDACTED_CONFIG_ENTRY_KEYS = [
@@ -44,7 +44,7 @@ async def async_get_device_diagnostics(
 def _async_get_diagnostics_for_device(
     hass: HomeAssistant, device: DeviceEntry
 ) -> dict[str, Any]:
-    data = {}
+    data: dict[str, Any] = {}
 
     data["name"] = device.name
     data["model"] = device.model
@@ -60,7 +60,7 @@ def _async_get_diagnostics_for_device(
         include_disabled_entities=True,
     )
 
-    hass_entities.sort(key=lambda entry: entry.original_name)
+    hass_entities.sort(key=lambda entry: entry.original_name or "")
 
     for entity_entry in hass_entities:
         state = hass.states.get(entity_entry.entity_id)
@@ -95,7 +95,7 @@ def _async_get_diagnostics(
     hkid = entry.data["AccessoryPairingID"]
     connection: HKDevice = hass.data[KNOWN_DEVICES][hkid]
 
-    data = {
+    data: dict[str, Any] = {
         "config-entry": {
             "title": entry.title,
             "version": entry.version,
@@ -107,17 +107,13 @@ def _async_get_diagnostics(
     # It is roughly equivalent to what is in .storage/homekit_controller-entity-map
     # But it also has the latest values seen by the polling or events
     data["entity-map"] = accessories = connection.entity_map.serialize()
+    data["config-num"] = connection.config_num
 
     # It contains serial numbers, which we should strip out
     for accessory in accessories:
         for service in accessory.get("services", []):
             for char in service.get("characteristics", []):
-                try:
-                    normalized = CharacteristicsTypes.get_uuid(char["type"])
-                except KeyError:
-                    normalized = char["type"]
-
-                if normalized in REDACTED_CHARACTERISTICS:
+                if char["type"] in REDACTED_CHARACTERISTICS:
                     char["value"] = REDACTED
 
     if device:
@@ -127,7 +123,8 @@ def _async_get_diagnostics(
 
         devices = data["devices"] = []
         for device_id in connection.devices.values():
-            device = device_registry.async_get(device_id)
+            if not (device := device_registry.async_get(device_id)):
+                continue
             devices.append(_async_get_diagnostics_for_device(hass, device))
 
     return data

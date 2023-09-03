@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import voluptuous as vol
 
@@ -140,7 +141,7 @@ class RflinkCover(RflinkCommand, CoverEntity, RestoreEntity):
         self.inverted_tilt = kwargs.pop(CONF_INV_TILT)
         super().__init__(device_id, **kwargs)
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Restore RFLink cover state (OPEN/CLOSE)."""
         await super().async_added_to_hass()
         if (old_state := await self.async_get_last_state()) is not None:
@@ -162,12 +163,12 @@ class RflinkCover(RflinkCommand, CoverEntity, RestoreEntity):
         return False
 
     @property
-    def is_closed(self):
+    def is_closed(self) -> bool | None:
         """Return if the cover is closed."""
         return not self._state
 
     @property
-    def assumed_state(self):
+    def assumed_state(self) -> bool:
         """Return True because covers can be stopped midway."""
         return True
 
@@ -183,15 +184,15 @@ class RflinkCover(RflinkCommand, CoverEntity, RestoreEntity):
             | SUPPORT_CLOSE_TILT
         )
 
-    async def async_close_cover(self, **kwargs):
+    async def async_close_cover(self, **kwargs: Any) -> None:
         """Turn the device close."""
         await self._async_handle_command("close_cover")
 
-    async def async_open_cover(self, **kwargs):
+    async def async_open_cover(self, **kwargs: Any) -> None:
         """Turn the device open."""
         await self._async_handle_command("open_cover")
 
-    async def async_stop_cover(self, **kwargs):
+    async def async_stop_cover(self, **kwargs: Any) -> None:
         """Turn the device stop."""
         await self._async_handle_command("stop_cover")
 

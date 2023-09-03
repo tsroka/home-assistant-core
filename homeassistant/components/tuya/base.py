@@ -5,12 +5,13 @@ import base64
 from dataclasses import dataclass
 import json
 import struct
-from typing import Any, Literal, overload
+from typing import Any, Literal, Self, overload
 
 from tuya_iot import TuyaDevice, TuyaDeviceManager
 
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import DeviceInfo, Entity
+from homeassistant.helpers.entity import Entity
 
 from .const import DOMAIN, LOGGER, TUYA_HA_SIGNAL_UPDATE_ENTITY, DPCode, DPType
 from .util import remap_value
@@ -41,15 +42,15 @@ class IntegerTypeData:
     @property
     def step_scaled(self) -> float:
         """Return the step scaled."""
-        return self.scale_value(self.step)
+        return self.step / (10**self.scale)
 
     def scale_value(self, value: float | int) -> float:
         """Scale a value."""
-        return value * 1.0 / (10 ** self.scale)
+        return value / (10**self.scale)
 
     def scale_value_back(self, value: float | int) -> int:
         """Return raw value for scaled."""
-        return int(value * (10 ** self.scale))
+        return int(value * (10**self.scale))
 
     def remap_value_to(
         self,
@@ -72,15 +73,17 @@ class IntegerTypeData:
         return remap_value(value, from_min, from_max, self.min, self.max, reverse)
 
     @classmethod
-    def from_json(cls, dpcode: DPCode, data: str) -> IntegerTypeData:
+    def from_json(cls, dpcode: DPCode, data: str) -> IntegerTypeData | None:
         """Load JSON string and return a IntegerTypeData object."""
-        parsed = json.loads(data)
+        if not (parsed := json.loads(data)):
+            return None
+
         return cls(
             dpcode,
             min=int(parsed["min"]),
             max=int(parsed["max"]),
             scale=float(parsed["scale"]),
-            step=float(parsed["step"]),
+            step=max(float(parsed["step"]), 1),
             unit=parsed.get("unit"),
             type=parsed.get("type"),
         )
@@ -94,9 +97,11 @@ class EnumTypeData:
     range: list[str]
 
     @classmethod
-    def from_json(cls, dpcode: DPCode, data: str) -> EnumTypeData:
+    def from_json(cls, dpcode: DPCode, data: str) -> EnumTypeData | None:
         """Load JSON string and return a EnumTypeData object."""
-        return cls(dpcode, **json.loads(data))
+        if not (parsed := json.loads(data)):
+            return None
+        return cls(dpcode, **parsed)
 
 
 @dataclass
@@ -108,12 +113,12 @@ class ElectricityTypeData:
     voltage: str | None = None
 
     @classmethod
-    def from_json(cls, data: str) -> ElectricityTypeData:
+    def from_json(cls, data: str) -> Self:
         """Load JSON string and return a ElectricityTypeData object."""
         return cls(**json.loads(data.lower()))
 
     @classmethod
-    def from_raw(cls, data: str) -> ElectricityTypeData:
+    def from_raw(cls, data: str) -> Self:
         """Decode base64 string and return a ElectricityTypeData object."""
         raw = base64.b64decode(data)
         voltage = struct.unpack(">H", raw[0:2])[0] / 10.0
@@ -127,6 +132,7 @@ class ElectricityTypeData:
 class TuyaEntity(Entity):
     """Tuya base device."""
 
+    _attr_has_entity_name = True
     _attr_should_poll = False
 
     def __init__(self, device: TuyaDevice, device_manager: TuyaDeviceManager) -> None:
@@ -134,16 +140,6 @@ class TuyaEntity(Entity):
         self._attr_unique_id = f"tuya.{device.id}"
         self.device = device
         self.device_manager = device_manager
-
-    @property
-    def name(self) -> str | None:
-        """Return Tuya device name."""
-        if (
-            hasattr(self, "entity_description")
-            and self.entity_description.name is not None
-        ):
-            return f"{self.device.name} {self.entity_description.name}"
-        return self.device.name
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -194,7 +190,7 @@ class TuyaEntity(Entity):
         dpcodes: str | DPCode | tuple[DPCode, ...] | None,
         *,
         prefer_function: bool = False,
-        dptype: DPType = None,
+        dptype: DPType | None = None,
     ) -> DPCode | EnumTypeData | IntegerTypeData | None:
         """Find a matching DP code available on for this device."""
         if dpcodes is None:
@@ -222,17 +218,25 @@ class TuyaEntity(Entity):
                     dptype == DPType.ENUM
                     and getattr(self.device, key)[dpcode].type == DPType.ENUM
                 ):
-                    return EnumTypeData.from_json(
-                        dpcode, getattr(self.device, key)[dpcode].values
-                    )
+                    if not (
+                        enum_type := EnumTypeData.from_json(
+                            dpcode, getattr(self.device, key)[dpcode].values
+                        )
+                    ):
+                        continue
+                    return enum_type
 
                 if (
                     dptype == DPType.INTEGER
                     and getattr(self.device, key)[dpcode].type == DPType.INTEGER
                 ):
-                    return IntegerTypeData.from_json(
-                        dpcode, getattr(self.device, key)[dpcode].values
-                    )
+                    if not (
+                        integer_type := IntegerTypeData.from_json(
+                            dpcode, getattr(self.device, key)[dpcode].values
+                        )
+                    ):
+                        continue
+                    return integer_type
 
                 if dptype not in (DPType.ENUM, DPType.INTEGER):
                     return dpcode

@@ -35,17 +35,12 @@ class SomaSensor(SomaEntity, SensorEntity):
     _attr_native_unit_of_measurement = PERCENTAGE
 
     @property
-    def name(self):
-        """Return the name of the device."""
-        return self.device["name"] + " battery level"
-
-    @property
     def native_value(self):
         """Return the state of the entity."""
         return self.battery_state
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Update the sensor with the latest data."""
         response = await self.get_battery_level_from_api()
 

@@ -1,8 +1,8 @@
 """The roomba component."""
 import asyncio
+from functools import partial
 import logging
 
-import async_timeout
 from roombapy import RoombaConnectionError, RoombaFactory
 
 from homeassistant import exceptions
@@ -42,12 +42,15 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
             },
         )
 
-    roomba = RoombaFactory.create_roomba(
-        address=config_entry.data[CONF_HOST],
-        blid=config_entry.data[CONF_BLID],
-        password=config_entry.data[CONF_PASSWORD],
-        continuous=config_entry.options[CONF_CONTINUOUS],
-        delay=config_entry.options[CONF_DELAY],
+    roomba = await hass.async_add_executor_job(
+        partial(
+            RoombaFactory.create_roomba,
+            address=config_entry.data[CONF_HOST],
+            blid=config_entry.data[CONF_BLID],
+            password=config_entry.data[CONF_PASSWORD],
+            continuous=config_entry.options[CONF_CONTINUOUS],
+            delay=config_entry.options[CONF_DELAY],
+        )
     )
 
     try:
@@ -70,7 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         CANCEL_STOP: cancel_stop,
     }
 
-    hass.config_entries.async_setup_platforms(config_entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
 
     if not config_entry.update_listeners:
         config_entry.add_update_listener(async_update_options)
@@ -82,7 +85,7 @@ async def async_connect_or_timeout(hass, roomba):
     """Connect to vacuum."""
     try:
         name = None
-        async with async_timeout.timeout(10):
+        async with asyncio.timeout(10):
             _LOGGER.debug("Initialize connection to vacuum")
             await hass.async_add_executor_job(roomba.connect)
             while not roomba.roomba_connected or name is None:
@@ -106,12 +109,12 @@ async def async_connect_or_timeout(hass, roomba):
 async def async_disconnect_or_timeout(hass, roomba):
     """Disconnect to vacuum."""
     _LOGGER.debug("Disconnect vacuum")
-    async with async_timeout.timeout(3):
+    async with asyncio.timeout(3):
         await hass.async_add_executor_job(roomba.disconnect)
     return True
 
 
-async def async_update_options(hass, config_entry):
+async def async_update_options(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
     """Update options."""
     await hass.config_entries.async_reload(config_entry.entry_id)
 

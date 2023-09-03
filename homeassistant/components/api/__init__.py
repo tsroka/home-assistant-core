@@ -1,24 +1,25 @@
 """Rest API for Home Assistant."""
 import asyncio
+from asyncio import timeout
+from functools import lru_cache
 from http import HTTPStatus
-import json
 import logging
 
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest
-import async_timeout
 import voluptuous as vol
 
+from homeassistant.auth.models import User
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.bootstrap import DATA_LOGGING
-from homeassistant.components.http import HomeAssistantView
+from homeassistant.components.http import HomeAssistantView, require_admin
 from homeassistant.const import (
     EVENT_HOMEASSISTANT_STOP,
-    EVENT_TIME_CHANGED,
     MATCH_ALL,
     URL_API,
     URL_API_COMPONENTS,
     URL_API_CONFIG,
+    URL_API_CORE_STATE,
     URL_API_ERROR_LOG,
     URL_API_EVENTS,
     URL_API_SERVICES,
@@ -29,10 +30,11 @@ from homeassistant.const import (
 import homeassistant.core as ha
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceNotFound, TemplateError, Unauthorized
-from homeassistant.helpers import template
-from homeassistant.helpers.json import JSONEncoder
+from homeassistant.helpers import config_validation as cv, template
+from homeassistant.helpers.json import json_dumps
 from homeassistant.helpers.service import async_get_all_descriptions
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util.json import json_loads
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,10 +51,13 @@ DOMAIN = "api"
 STREAM_PING_PAYLOAD = "ping"
 STREAM_PING_INTERVAL = 50  # seconds
 
+CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register the API with the HTTP interface."""
     hass.http.register_view(APIStatusView)
+    hass.http.register_view(APICoreStateView)
     hass.http.register_view(APIEventStream)
     hass.http.register_view(APIConfigView)
     hass.http.register_view(APIStatesView)
@@ -82,17 +87,33 @@ class APIStatusView(HomeAssistantView):
         return self.json_message("API running.")
 
 
+class APICoreStateView(HomeAssistantView):
+    """View to handle core state requests."""
+
+    url = URL_API_CORE_STATE
+    name = "api:core:state"
+
+    @ha.callback
+    def get(self, request: web.Request) -> web.Response:
+        """Retrieve the current core state.
+
+        This API is intended to be a fast and lightweight way to check if the
+        Home Assistant core is running. Its primary use case is for supervisor
+        to check if Home Assistant is running.
+        """
+        hass: HomeAssistant = request.app["hass"]
+        return self.json({"state": hass.state.value})
+
+
 class APIEventStream(HomeAssistantView):
     """View to handle EventStream requests."""
 
     url = URL_API_STREAM
     name = "api:stream"
 
+    @require_admin
     async def get(self, request):
         """Provide a streaming interface for the event bus."""
-        # pylint: disable=no-self-use
-        if not request["hass_user"].is_admin:
-            raise Unauthorized()
         hass = request.app["hass"]
         stop_obj = object()
         to_write = asyncio.Queue()
@@ -102,9 +123,6 @@ class APIEventStream(HomeAssistantView):
 
         async def forward_events(event):
             """Forward events to the open request."""
-            if event.event_type == EVENT_TIME_CHANGED:
-                return
-
             if restrict and event.event_type not in restrict:
                 return
 
@@ -113,7 +131,7 @@ class APIEventStream(HomeAssistantView):
             if event.event_type == EVENT_HOMEASSISTANT_STOP:
                 data = stop_obj
             else:
-                data = json.dumps(event, cls=JSONEncoder)
+                data = json_dumps(event)
 
             await to_write.put(data)
 
@@ -131,7 +149,7 @@ class APIEventStream(HomeAssistantView):
 
             while True:
                 try:
-                    async with async_timeout.timeout(STREAM_PING_INTERVAL):
+                    async with timeout(STREAM_PING_INTERVAL):
                         payload = await to_write.get()
 
                     if payload is stop_obj:
@@ -172,16 +190,20 @@ class APIStatesView(HomeAssistantView):
     name = "api:states"
 
     @ha.callback
-    def get(self, request):
+    def get(self, request: web.Request) -> web.Response:
         """Get current states."""
-        user = request["hass_user"]
+        user: User = request["hass_user"]
+        hass: HomeAssistant = request.app["hass"]
+        if user.is_admin:
+            return self.json([state.as_dict() for state in hass.states.async_all()])
         entity_perm = user.permissions.check_entity
-        states = [
-            state
-            for state in request.app["hass"].states.async_all()
-            if entity_perm(state.entity_id, "read")
-        ]
-        return self.json(states)
+        return self.json(
+            [
+                state.as_dict()
+                for state in hass.states.async_all()
+                if entity_perm(state.entity_id, "read")
+            ]
+        )
 
 
 class APIEntityStateView(HomeAssistantView):
@@ -260,13 +282,12 @@ class APIEventView(HomeAssistantView):
     url = "/api/events/{event_type}"
     name = "api:event"
 
+    @require_admin
     async def post(self, request, event_type):
         """Fire events."""
-        if not request["hass_user"].is_admin:
-            raise Unauthorized()
         body = await request.text()
         try:
-            event_data = json.loads(body) if body else None
+            event_data = json_loads(body) if body else None
         except ValueError:
             return self.json_message(
                 "Event data should be valid JSON.", HTTPStatus.BAD_REQUEST
@@ -319,7 +340,7 @@ class APIDomainServicesView(HomeAssistantView):
         hass: ha.HomeAssistant = request.app["hass"]
         body = await request.text()
         try:
-            data = json.loads(body) if body else None
+            data = json_loads(body) if body else None
         except ValueError:
             return self.json_message(
                 "Data should be valid JSON.", HTTPStatus.BAD_REQUEST
@@ -355,19 +376,24 @@ class APIComponentsView(HomeAssistantView):
         return self.json(request.app["hass"].config.components)
 
 
+@lru_cache
+def _cached_template(template_str: str, hass: ha.HomeAssistant) -> template.Template:
+    """Return a cached template."""
+    return template.Template(template_str, hass)
+
+
 class APITemplateView(HomeAssistantView):
     """View to handle Template requests."""
 
     url = URL_API_TEMPLATE
     name = "api:template"
 
+    @require_admin
     async def post(self, request):
         """Render a template."""
-        if not request["hass_user"].is_admin:
-            raise Unauthorized()
         try:
             data = await request.json()
-            tpl = template.Template(data["template"], request.app["hass"])
+            tpl = _cached_template(data["template"], request.app["hass"])
             return tpl.async_render(variables=data.get("variables"), parse_result=False)
         except (ValueError, TemplateError) as ex:
             return self.json_message(
@@ -381,11 +407,9 @@ class APIErrorLog(HomeAssistantView):
     url = URL_API_ERROR_LOG
     name = "api:error_log"
 
+    @require_admin
     async def get(self, request):
         """Retrieve API error log."""
-        # pylint: disable=no-self-use
-        if not request["hass_user"].is_admin:
-            raise Unauthorized()
         return web.FileResponse(request.app["hass"].data[DATA_LOGGING])
 
 

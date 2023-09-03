@@ -2,6 +2,8 @@
 from pyplaato.models.device import PlaatoDevice
 
 from homeassistant.helpers import entity
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import (
     DEVICE,
@@ -17,6 +19,8 @@ from .const import (
 
 class PlaatoEntity(entity.Entity):
     """Representation of a Plaato Entity."""
+
+    _attr_should_poll = False
 
     def __init__(self, data, sensor_type, coordinator=None):
         """Initialize the sensor."""
@@ -53,10 +57,10 @@ class PlaatoEntity(entity.Entity):
         return f"{self._device_id}_{self._sensor_type}"
 
     @property
-    def device_info(self) -> entity.DeviceInfo:
+    def device_info(self) -> DeviceInfo:
         """Get device info."""
         sw_version = self._sensor_data.firmware_version
-        return entity.DeviceInfo(
+        return DeviceInfo(
             identifiers={(DOMAIN, self._device_id)},
             manufacturer="Plaato",
             model=self._device_type,
@@ -82,11 +86,6 @@ class PlaatoEntity(entity.Entity):
             return self._coordinator.last_update_success
         return True
 
-    @property
-    def should_poll(self):
-        """Return the polling state."""
-        return False
-
     async def async_added_to_hass(self):
         """When entity is added to hass."""
         if self._coordinator is not None:
@@ -95,7 +94,8 @@ class PlaatoEntity(entity.Entity):
             )
         else:
             self.async_on_remove(
-                self.hass.helpers.dispatcher.async_dispatcher_connect(
+                async_dispatcher_connect(
+                    self.hass,
                     SENSOR_SIGNAL % (self._device_id, self._sensor_type),
                     self.async_write_ha_state,
                 )

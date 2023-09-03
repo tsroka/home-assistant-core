@@ -1,6 +1,7 @@
 """Generate mypy config."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 import configparser
 import io
 import os
@@ -11,80 +12,14 @@ from homeassistant.const import REQUIRED_PYTHON_VER
 
 from .model import Config, Integration
 
-# Modules which have type hints which known to be broken.
-# If you are an author of component listed here, please fix these errors and
-# remove your component from this list to enable type checks.
-# Do your best to not add anything new here.
-IGNORED_MODULES: Final[list[str]] = [
-    "homeassistant.components.blueprint.*",
-    "homeassistant.components.cloud.*",
-    "homeassistant.components.config.*",
-    "homeassistant.components.conversation.*",
-    "homeassistant.components.deconz.*",
-    "homeassistant.components.demo.*",
-    "homeassistant.components.denonavr.*",
-    "homeassistant.components.evohome.*",
-    "homeassistant.components.fireservicerota.*",
-    "homeassistant.components.firmata.*",
-    "homeassistant.components.freebox.*",
-    "homeassistant.components.geniushub.*",
-    "homeassistant.components.google_assistant.*",
-    "homeassistant.components.gree.*",
-    "homeassistant.components.harmony.*",
-    "homeassistant.components.hassio.*",
-    "homeassistant.components.here_travel_time.*",
-    "homeassistant.components.home_plus_control.*",
-    "homeassistant.components.homekit.*",
-    "homeassistant.components.homekit_controller.*",
-    "homeassistant.components.honeywell.*",
-    "homeassistant.components.icloud.*",
-    "homeassistant.components.influxdb.*",
-    "homeassistant.components.input_datetime.*",
-    "homeassistant.components.isy994.*",
-    "homeassistant.components.izone.*",
-    "homeassistant.components.konnected.*",
-    "homeassistant.components.kostal_plenticore.*",
-    "homeassistant.components.litterrobot.*",
-    "homeassistant.components.lovelace.*",
-    "homeassistant.components.lutron_caseta.*",
-    "homeassistant.components.lyric.*",
-    "homeassistant.components.melcloud.*",
-    "homeassistant.components.meteo_france.*",
-    "homeassistant.components.minecraft_server.*",
-    "homeassistant.components.mobile_app.*",
-    "homeassistant.components.nest.legacy.*",
-    "homeassistant.components.netgear.*",
-    "homeassistant.components.nilu.*",
-    "homeassistant.components.nzbget.*",
-    "homeassistant.components.omnilogic.*",
-    "homeassistant.components.onvif.*",
-    "homeassistant.components.ozw.*",
-    "homeassistant.components.philips_js.*",
-    "homeassistant.components.plex.*",
-    "homeassistant.components.profiler.*",
-    "homeassistant.components.solaredge.*",
-    "homeassistant.components.sonos.*",
-    "homeassistant.components.spotify.*",
-    "homeassistant.components.system_health.*",
-    "homeassistant.components.telegram_bot.*",
-    "homeassistant.components.template.*",
-    "homeassistant.components.toon.*",
-    "homeassistant.components.unifi.*",
-    "homeassistant.components.upnp.*",
-    "homeassistant.components.vizio.*",
-    "homeassistant.components.withings.*",
-    "homeassistant.components.xbox.*",
-    "homeassistant.components.xiaomi_aqara.*",
-    "homeassistant.components.xiaomi_miio.*",
-    "homeassistant.components.yeelight.*",
-    "homeassistant.components.zha.*",
-    "homeassistant.components.zwave.*",
-]
-
 # Component modules which should set no_implicit_reexport = true.
 NO_IMPLICIT_REEXPORT_MODULES: set[str] = {
     "homeassistant.components",
+    "homeassistant.components.application_credentials.*",
     "homeassistant.components.diagnostics.*",
+    "homeassistant.components.spotify.*",
+    "homeassistant.components.stream.*",
+    "homeassistant.components.update.*",
 }
 
 HEADER: Final = """
@@ -96,15 +31,29 @@ HEADER: Final = """
 
 GENERAL_SETTINGS: Final[dict[str, str]] = {
     "python_version": ".".join(str(x) for x in REQUIRED_PYTHON_VER[:2]),
+    "plugins": ", ".join(["pydantic.mypy"]),
     "show_error_codes": "true",
     "follow_imports": "silent",
     # Enable some checks globally.
     "ignore_missing_imports": "true",
+    "local_partial_types": "true",
     "strict_equality": "true",
+    "no_implicit_optional": "true",
     "warn_incomplete_stub": "true",
     "warn_redundant_casts": "true",
     "warn_unused_configs": "true",
     "warn_unused_ignores": "true",
+    "enable_error_code": ", ".join(
+        [
+            "ignore-without-code",
+            "redundant-self",
+            "truthy-iterable",
+        ]
+    ),
+    "disable_error_code": ", ".join(["annotation-unchecked"]),
+    # Impractical in real code
+    # E.g. this breaks passthrough ParamSpec typing with Concatenate
+    "extra_checks": "false",
 }
 
 # This is basically the list of checks which is enabled for "strict=true".
@@ -118,7 +67,6 @@ STRICT_SETTINGS: Final[list[str]] = [
     "disallow_untyped_calls",
     "disallow_untyped_decorators",
     "disallow_untyped_defs",
-    "no_implicit_optional",
     "warn_return_any",
     "warn_unreachable",
     # TODO: turn these on, address issues
@@ -132,19 +80,60 @@ STRICT_SETTINGS_CORE: Final[list[str]] = [
     "disallow_any_generics",
 ]
 
+# Plugin specific settings
+# Bump mypy cache when updating! Some plugins don't invalidate the cache properly.
+# pydantic: https://docs.pydantic.dev/mypy_plugin/#plugin-settings
+PLUGIN_CONFIG: Final[dict[str, dict[str, str]]] = {
+    "pydantic-mypy": {
+        "init_forbid_extra": "true",
+        "init_typed": "true",
+        "warn_required_dynamic_aliases": "true",
+        "warn_untyped_fields": "true",
+    }
+}
 
-def generate_and_validate(config: Config) -> str:
+
+def _sort_within_sections(line_iter: Iterable[str]) -> Iterable[str]:
+    """Sort lines within sections.
+
+    Sections are defined as anything not delimited by a blank line
+    or an octothorpe-prefixed comment line.
+    """
+    section: list[str] = []
+    for line in line_iter:
+        if line.startswith("#") or not line.strip():
+            yield from sorted(section)
+            section.clear()
+            yield line
+            continue
+        section.append(line)
+    yield from sorted(section)
+
+
+def _get_strict_typing_path(config: Config) -> Path:
+    return config.root / ".strict-typing"
+
+
+def _get_mypy_ini_path(config: Config) -> Path:
+    return config.root / "mypy.ini"
+
+
+def _generate_and_validate_strict_typing(config: Config) -> str:
+    """Validate and generate strict_typing."""
+    lines = [
+        line.strip()
+        for line in _get_strict_typing_path(config).read_text().splitlines()
+    ]
+    return "\n".join(_sort_within_sections(lines)) + "\n"
+
+
+def _generate_and_validate_mypy_config(config: Config) -> str:
     """Validate and generate mypy config."""
-
-    config_path = config.root / ".strict-typing"
-
-    with config_path.open() as fp:
-        lines = fp.readlines()
 
     # Filter empty and commented lines.
     parsed_modules: list[str] = [
         line.strip()
-        for line in lines
+        for line in config.cache["strict_typing"].splitlines()
         if line.strip() != "" and not line.startswith("#")
     ]
 
@@ -156,26 +145,9 @@ def generate_and_validate(config: Config) -> str:
         else:
             strict_core_modules.append(module)
 
-    ignored_modules_set: set[str] = set(IGNORED_MODULES)
-    for module in strict_modules:
-        if (
-            not module.startswith("homeassistant.components.")
-            and module != "homeassistant.components"
-        ):
-            config.add_error(
-                "mypy_config", f"Only components should be added: {module}"
-            )
-        if module in ignored_modules_set:
-            config.add_error(
-                "mypy_config", f"Module '{module}' is in ignored list in mypy_config.py"
-            )
-
     # Validate that all modules exist.
     all_modules = (
-        strict_modules
-        + strict_core_modules
-        + IGNORED_MODULES
-        + list(NO_IMPLICIT_REEXPORT_MODULES)
+        strict_modules + strict_core_modules + list(NO_IMPLICIT_REEXPORT_MODULES)
     )
     for module in all_modules:
         if module.endswith(".*"):
@@ -204,6 +176,13 @@ def generate_and_validate(config: Config) -> str:
     for key in STRICT_SETTINGS:
         mypy_config.set(general_section, key, "true")
 
+    for plugin_name, plugin_config in PLUGIN_CONFIG.items():
+        if not plugin_config:
+            continue
+        mypy_config.add_section(plugin_name)
+        for key, value in plugin_config.items():
+            mypy_config.set(plugin_name, key, value)
+
     # By default enable no_implicit_reexport only for homeassistant.*
     # Disable it afterwards for all components
     components_section = "mypy-homeassistant.*"
@@ -231,7 +210,9 @@ def generate_and_validate(config: Config) -> str:
         if strict_module in NO_IMPLICIT_REEXPORT_MODULES:
             mypy_config.set(strict_section, "no_implicit_reexport", "true")
 
-    for reexport_module in NO_IMPLICIT_REEXPORT_MODULES.difference(strict_modules):
+    for reexport_module in sorted(
+        NO_IMPLICIT_REEXPORT_MODULES.difference(strict_modules)
+    ):
         reexport_section = f"mypy-{reexport_module}"
         mypy_config.add_section(reexport_section)
         mypy_config.set(reexport_section, "no_implicit_reexport", "true")
@@ -242,36 +223,39 @@ def generate_and_validate(config: Config) -> str:
     for key in STRICT_SETTINGS:
         mypy_config.set(tests_section, key, "false")
 
-    for ignored_module in IGNORED_MODULES:
-        ignored_section = f"mypy-{ignored_module}"
-        mypy_config.add_section(ignored_section)
-        mypy_config.set(ignored_section, "ignore_errors", "true")
-
     with io.StringIO() as fp:
         mypy_config.write(fp)
         fp.seek(0)
-        return HEADER + fp.read().strip()
+        return f"{HEADER}{fp.read().strip()}\n"
 
 
 def validate(integrations: dict[str, Integration], config: Config) -> None:
-    """Validate mypy config."""
-    config_path = config.root / "mypy.ini"
-    config.cache["mypy_config"] = content = generate_and_validate(config)
+    """Validate strict_typing and mypy config."""
+    strict_typing_content = _generate_and_validate_strict_typing(config)
+    config.cache["strict_typing"] = strict_typing_content
+
+    mypy_content = _generate_and_validate_mypy_config(config)
+    config.cache["mypy_config"] = mypy_content
 
     if any(err.plugin == "mypy_config" for err in config.errors):
         return
 
-    with open(str(config_path)) as fp:
-        if fp.read().strip() != content:
-            config.add_error(
-                "mypy_config",
-                "File mypy.ini is not up to date. Run python3 -m script.hassfest",
-                fixable=True,
-            )
+    if _get_strict_typing_path(config).read_text() != strict_typing_content:
+        config.add_error(
+            "mypy_config",
+            "File .strict_typing is not up to date. Run python3 -m script.hassfest",
+            fixable=True,
+        )
+
+    if _get_mypy_ini_path(config).read_text() != mypy_content:
+        config.add_error(
+            "mypy_config",
+            "File mypy.ini is not up to date. Run python3 -m script.hassfest",
+            fixable=True,
+        )
 
 
 def generate(integrations: dict[str, Integration], config: Config) -> None:
-    """Generate mypy config."""
-    config_path = config.root / "mypy.ini"
-    with open(str(config_path), "w") as fp:
-        fp.write(f"{config.cache['mypy_config']}\n")
+    """Generate strict_typing and mypy config."""
+    _get_mypy_ini_path(config).write_text(config.cache["mypy_config"])
+    _get_strict_typing_path(config).write_text(config.cache["strict_typing"])

@@ -26,6 +26,7 @@ from homeassistant.const import (
 from .const import (
     CONF_DATA_TYPE,
     CONF_INPUT_TYPE,
+    CONF_SLAVE_COUNT,
     CONF_SWAP,
     CONF_SWAP_BYTE,
     CONF_SWAP_NONE,
@@ -39,28 +40,13 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-OLD_DATA_TYPES = {
-    DataType.INT: {
-        1: DataType.INT16,
-        2: DataType.INT32,
-        4: DataType.INT64,
-    },
-    DataType.UINT: {
-        1: DataType.UINT16,
-        2: DataType.UINT32,
-        4: DataType.UINT64,
-    },
-    DataType.FLOAT: {
-        1: DataType.FLOAT16,
-        2: DataType.FLOAT32,
-        4: DataType.FLOAT64,
-    },
-}
 ENTRY = namedtuple("ENTRY", ["struct_id", "register_count"])
 DEFAULT_STRUCT_FORMAT = {
+    DataType.INT8: ENTRY("b", 1),
     DataType.INT16: ENTRY("h", 1),
     DataType.INT32: ENTRY("i", 2),
     DataType.INT64: ENTRY("q", 4),
+    DataType.UINT8: ENTRY("c", 1),
     DataType.UINT16: ENTRY("H", 1),
     DataType.UINT32: ENTRY("I", 2),
     DataType.UINT64: ENTRY("Q", 4),
@@ -78,27 +64,29 @@ def struct_validator(config: dict[str, Any]) -> dict[str, Any]:
     count = config.get(CONF_COUNT, 1)
     name = config[CONF_NAME]
     structure = config.get(CONF_STRUCTURE)
-    swap_type = config.get(CONF_SWAP)
-    if data_type in (DataType.INT, DataType.UINT, DataType.FLOAT):
-        error = f"{name}  with {data_type} is not valid, trying to convert"
-        _LOGGER.warning(error)
-        try:
-            data_type = OLD_DATA_TYPES[data_type][config.get(CONF_COUNT, 1)]
-            config[CONF_DATA_TYPE] = data_type
-        except KeyError as exp:
-            error = f"{name}  cannot convert automatically {data_type}"
-            raise vol.Invalid(error) from exp
+    slave_count = config.get(CONF_SLAVE_COUNT, 0) + 1
+    swap_type = config.get(CONF_SWAP, CONF_SWAP_NONE)
+    if (
+        slave_count > 1
+        and count > 1
+        and data_type not in (DataType.CUSTOM, DataType.STRING)
+    ):
+        error = f"{name}  {CONF_COUNT} cannot be mixed with {data_type}"
+        raise vol.Invalid(error)
     if config[CONF_DATA_TYPE] != DataType.CUSTOM:
         if structure:
             error = f"{name}  structure: cannot be mixed with {data_type}"
+
+    if config[CONF_DATA_TYPE] == DataType.CUSTOM:
+        if slave_count > 1:
+            error = f"{name}: `{CONF_STRUCTURE}` illegal with `{CONF_SLAVE_COUNT}` / `{CONF_SLAVE}`"
             raise vol.Invalid(error)
-        structure = f">{DEFAULT_STRUCT_FORMAT[data_type].struct_id}"
-        if CONF_COUNT not in config:
-            config[CONF_COUNT] = DEFAULT_STRUCT_FORMAT[data_type].register_count
-    else:
+        if swap_type != CONF_SWAP_NONE:
+            error = f"{name}: `{CONF_STRUCTURE}` illegal with `{CONF_SWAP}`"
+            raise vol.Invalid(error)
         if not structure:
             error = (
-                f"Error in sensor {name}. The `{CONF_STRUCTURE}` field can not be empty"
+                f"Error in sensor {name}. The `{CONF_STRUCTURE}` field cannot be empty"
             )
             raise vol.Invalid(error)
         try:
@@ -113,19 +101,36 @@ def struct_validator(config: dict[str, Any]) -> dict[str, Any]:
                 f"Structure request {size} bytes, "
                 f"but {count} registers have a size of {bytecount} bytes"
             )
+        return {
+            **config,
+            CONF_STRUCTURE: structure,
+            CONF_SWAP: swap_type,
+        }
+    if data_type not in DEFAULT_STRUCT_FORMAT:
+        error = f"Error in sensor {name}. data_type `{data_type}` not supported"
+        raise vol.Invalid(error)
+    if slave_count > 1 and data_type == DataType.STRING:
+        error = f"{name}: `{data_type}`  illegal with `{CONF_SLAVE_COUNT}`"
+        raise vol.Invalid(error)
 
-        if swap_type != CONF_SWAP_NONE:
-            if swap_type == CONF_SWAP_BYTE:
-                regs_needed = 1
-            else:  # CONF_SWAP_WORD_BYTE, CONF_SWAP_WORD
-                regs_needed = 2
-            if count < regs_needed or (count % regs_needed) != 0:
-                raise vol.Invalid(
-                    f"Error in sensor {name} swap({swap_type}) "
-                    f"not possible due to the registers "
-                    f"count: {count}, needed: {regs_needed}"
-                )
-
+    if CONF_COUNT not in config:
+        config[CONF_COUNT] = DEFAULT_STRUCT_FORMAT[data_type].register_count
+    if swap_type != CONF_SWAP_NONE:
+        if swap_type == CONF_SWAP_BYTE:
+            regs_needed = 1
+        else:  # CONF_SWAP_WORD_BYTE, CONF_SWAP_WORD
+            regs_needed = 2
+        count = config[CONF_COUNT]
+        if count < regs_needed or (count % regs_needed) != 0:
+            raise vol.Invalid(
+                f"Error in sensor {name} swap({swap_type}) "
+                f"impossible because datatype({data_type}) is too small"
+            )
+    structure = f">{DEFAULT_STRUCT_FORMAT[data_type].struct_id}"
+    if slave_count > 1:
+        structure = f">{slave_count}{DEFAULT_STRUCT_FORMAT[data_type].struct_id}"
+    else:
+        structure = f">{DEFAULT_STRUCT_FORMAT[data_type].struct_id}"
     return {
         **config,
         CONF_STRUCTURE: structure,
@@ -150,6 +155,20 @@ def number_validator(value: Any) -> int | float:
         raise vol.Invalid(f"invalid number {value}") from err
 
 
+def nan_validator(value: Any) -> int:
+    """Convert nan string to number (can be hex string or int)."""
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(value, 16)
+    except (TypeError, ValueError) as err:
+        raise vol.Invalid(f"invalid number {value}") from err
+
+
 def scan_interval_validator(config: dict) -> dict:
     """Control scan_interval."""
     for hub in config:
@@ -164,8 +183,10 @@ def scan_interval_validator(config: dict) -> dict:
                     continue
                 if scan_interval < 5:
                     _LOGGER.warning(
-                        "%s %s scan_interval(%d) is lower than 5 seconds, "
-                        "which may cause Home Assistant stability issues",
+                        (
+                            "%s %s scan_interval(%d) is lower than 5 seconds, "
+                            "which may cause Home Assistant stability issues"
+                        ),
                         component,
                         entry.get(CONF_NAME),
                         scan_interval,
@@ -207,14 +228,19 @@ def duplicate_entity_validator(config: dict) -> dict:
                     addr += "_" + str(entry[CONF_COMMAND_ON])
                 if CONF_COMMAND_OFF in entry:
                     addr += "_" + str(entry[CONF_COMMAND_OFF])
-                if CONF_SLAVE in entry:
-                    addr += "_" + str(entry[CONF_SLAVE])
+                addr += "_" + str(entry.get(CONF_SLAVE, 0))
                 if addr in addresses:
-                    err = f"Modbus {component}/{name} address {addr} is duplicate, second entry not loaded!"
+                    err = (
+                        f"Modbus {component}/{name} address {addr} is duplicate, second"
+                        " entry not loaded!"
+                    )
                     _LOGGER.warning(err)
                     errors.append(index)
                 elif name in names:
-                    err = f"Modbus {component}/{name}  is duplicate, second entry not loaded!"
+                    err = (
+                        f"Modbus {component}/{name}  is duplicate, second entry not"
+                        " loaded!"
+                    )
                     _LOGGER.warning(err)
                     errors.append(index)
                 else:

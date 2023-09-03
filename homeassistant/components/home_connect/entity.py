@@ -3,8 +3,9 @@
 import logging
 
 from homeassistant.core import callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import DeviceInfo, Entity
+from homeassistant.helpers.entity import Entity
 
 from .api import HomeConnectDevice
 from .const import DOMAIN, SIGNAL_UPDATE_ENTITIES
@@ -14,6 +15,8 @@ _LOGGER = logging.getLogger(__name__)
 
 class HomeConnectEntity(Entity):
     """Generic Home Connect entity (base class)."""
+
+    _attr_should_poll = False
 
     def __init__(self, device: HomeConnectDevice, desc: str) -> None:
         """Initialize the entity."""
@@ -34,11 +37,6 @@ class HomeConnectEntity(Entity):
         """Update data."""
         if ha_id == self.device.appliance.haId:
             self.async_entity_update()
-
-    @property
-    def should_poll(self):
-        """No polling needed."""
-        return False
 
     @property
     def name(self):

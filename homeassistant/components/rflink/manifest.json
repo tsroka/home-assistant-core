@@ -1,9 +1,9 @@
 {
   "domain": "rflink",
-  "name": "RFLink somfy",
-  "documentation": "https://www.home-assistant.io/integrations/rflink",
-  "requirements": ["rflink==0.0.62"],
+  "name": "RFLink CUSTOM",
   "codeowners": ["@javicalle"],
+  "documentation": "https://www.home-assistant.io/integrations/rflink",
   "iot_class": "assumed_state",
-  "loggers": ["rflink"]
+  "loggers": ["rflink"],
+  "requirements": ["rflink==0.0.65"]
 }

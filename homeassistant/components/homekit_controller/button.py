@@ -1,5 +1,4 @@
-"""
-Support for Homekit buttons.
+"""Support for Homekit buttons.
 
 These are mostly used where a HomeKit accessory exposes additional non-standard
 characteristics that don't map to a Home Assistant feature.
@@ -7,6 +6,7 @@ characteristics that don't map to a Home Assistant feature.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 from aiohomekit.model.characteristics import Characteristic, CharacteristicsTypes
 
@@ -16,11 +16,16 @@ from homeassistant.components.button import (
     ButtonEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory, Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType
 
-from . import KNOWN_DEVICES, CharacteristicEntity
+from . import KNOWN_DEVICES
+from .connection import HKDevice
+from .entity import CharacteristicEntity
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -31,15 +36,15 @@ class HomeKitButtonEntityDescription(ButtonEntityDescription):
 
 
 BUTTON_ENTITIES: dict[str, HomeKitButtonEntityDescription] = {
-    CharacteristicsTypes.Vendor.HAA_SETUP: HomeKitButtonEntityDescription(
-        key=CharacteristicsTypes.Vendor.HAA_SETUP,
+    CharacteristicsTypes.VENDOR_HAA_SETUP: HomeKitButtonEntityDescription(
+        key=CharacteristicsTypes.VENDOR_HAA_SETUP,
         name="Setup",
         icon="mdi:cog",
         entity_category=EntityCategory.CONFIG,
         write_value="#HAA@trcmd",
     ),
-    CharacteristicsTypes.Vendor.HAA_UPDATE: HomeKitButtonEntityDescription(
-        key=CharacteristicsTypes.Vendor.HAA_UPDATE,
+    CharacteristicsTypes.VENDOR_HAA_UPDATE: HomeKitButtonEntityDescription(
+        key=CharacteristicsTypes.VENDOR_HAA_UPDATE,
         name="Update",
         device_class=ButtonDeviceClass.UPDATE,
         entity_category=EntityCategory.CONFIG,
@@ -54,28 +59,18 @@ BUTTON_ENTITIES: dict[str, HomeKitButtonEntityDescription] = {
 }
 
 
-# For legacy reasons, "built-in" characteristic types are in their short form
-# And vendor types don't have a short form
-# This means long and short forms get mixed up in this dict, and comparisons
-# don't work!
-# We call get_uuid on *every* type to normalise them to the long form
-# Eventually aiohomekit will use the long form exclusively amd this can be removed.
-for k, v in list(BUTTON_ENTITIES.items()):
-    BUTTON_ENTITIES[CharacteristicsTypes.get_uuid(k)] = BUTTON_ENTITIES.pop(k)
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Homekit buttons."""
-    hkid = config_entry.data["AccessoryPairingID"]
-    conn = hass.data[KNOWN_DEVICES][hkid]
+    hkid: str = config_entry.data["AccessoryPairingID"]
+    conn: HKDevice = hass.data[KNOWN_DEVICES][hkid]
 
     @callback
-    def async_add_characteristic(char: Characteristic):
-        entities = []
+    def async_add_characteristic(char: Characteristic) -> bool:
+        entities: list[HomeKitButton | HomeKitEcobeeClearHoldButton] = []
         info = {"aid": char.service.accessory.aid, "iid": char.service.iid}
 
         if description := BUTTON_ENTITIES.get(char.type):
@@ -85,7 +80,12 @@ async def async_setup_entry(
         else:
             return False
 
-        async_add_entities(entities, True)
+        for entity in entities:
+            conn.async_migrate_unique_id(
+                entity.old_unique_id, entity.unique_id, Platform.BUTTON
+            )
+
+        async_add_entities(entities)
         return True
 
     conn.add_char_factory(async_add_characteristic)
@@ -98,23 +98,23 @@ class HomeKitButton(CharacteristicEntity, ButtonEntity):
 
     def __init__(
         self,
-        conn,
-        info,
-        char,
+        conn: HKDevice,
+        info: ConfigType,
+        char: Characteristic,
         description: HomeKitButtonEntityDescription,
-    ):
+    ) -> None:
         """Initialise a HomeKit button control."""
         self.entity_description = description
         super().__init__(conn, info, char)
 
-    def get_characteristic_types(self):
+    def get_characteristic_types(self) -> list[str]:
         """Define the homekit characteristics the entity is tracking."""
         return [self._char.type]
 
     @property
     def name(self) -> str:
         """Return the name of the device if any."""
-        if name := super().name:
+        if name := self.accessory.name:
             return f"{name} {self.entity_description.name}"
         return f"{self.entity_description.name}"
 
@@ -122,13 +122,13 @@ class HomeKitButton(CharacteristicEntity, ButtonEntity):
         """Press the button."""
         key = self.entity_description.key
         val = self.entity_description.write_value
-        return await self.async_put_characteristics({key: val})
+        await self.async_put_characteristics({key: val})
 
 
 class HomeKitEcobeeClearHoldButton(CharacteristicEntity, ButtonEntity):
     """Representation of a Button control for Ecobee clear hold request."""
 
-    def get_characteristic_types(self):
+    def get_characteristic_types(self) -> list[str]:
         """Define the homekit characteristics the entity is tracking."""
         return []
 
@@ -154,6 +154,29 @@ class HomeKitEcobeeClearHoldButton(CharacteristicEntity, ButtonEntity):
             await self.async_put_characteristics({key: val})
 
 
+class HomeKitProvisionPreferredThreadCredentials(CharacteristicEntity, ButtonEntity):
+    """A button users can press to migrate their HomeKit BLE device to Thread."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def get_characteristic_types(self) -> list[str]:
+        """Define the homekit characteristics the entity is tracking."""
+        return []
+
+    @property
+    def name(self) -> str:
+        """Return the name of the device if any."""
+        prefix = ""
+        if name := super().name:
+            prefix = name
+        return f"{prefix} Provision Preferred Thread Credentials"
+
+    async def async_press(self) -> None:
+        """Press the button."""
+        await self._accessory.async_thread_provision()
+
+
 BUTTON_ENTITY_CLASSES: dict[str, type] = {
-    CharacteristicsTypes.Vendor.ECOBEE_CLEAR_HOLD: HomeKitEcobeeClearHoldButton,
+    CharacteristicsTypes.VENDOR_ECOBEE_CLEAR_HOLD: HomeKitEcobeeClearHoldButton,
+    CharacteristicsTypes.THREAD_CONTROL_POINT: HomeKitProvisionPreferredThreadCredentials,
 }

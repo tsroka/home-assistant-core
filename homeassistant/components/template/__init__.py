@@ -6,6 +6,7 @@ from collections.abc import Callable
 import logging
 
 from homeassistant import config as conf_util
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_UNIQUE_ID,
     EVENT_HOMEASSISTANT_START,
@@ -19,10 +20,12 @@ from homeassistant.helpers import (
     update_coordinator,
 )
 from homeassistant.helpers.reload import async_reload_integration_platforms
+from homeassistant.helpers.script import Script
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 
-from .const import CONF_TRIGGER, DOMAIN, PLATFORMS
+from .const import CONF_ACTION, CONF_TRIGGER, DOMAIN, PLATFORMS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,14 +57,33 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
         hass.bus.async_fire(f"event_{DOMAIN}_reloaded", context=call.context)
 
-    hass.helpers.service.async_register_admin_service(
-        DOMAIN, SERVICE_RELOAD, _reload_config
-    )
+    async_register_admin_service(hass, DOMAIN, SERVICE_RELOAD, _reload_config)
 
     return True
 
 
-async def _process_config(hass, hass_config):
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up a config entry."""
+    await hass.config_entries.async_forward_entry_setups(
+        entry, (entry.options["template_type"],)
+    )
+    entry.async_on_unload(entry.add_update_listener(config_entry_update_listener))
+    return True
+
+
+async def config_entry_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Update listener, called when the config entry options are changed."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
+    return await hass.config_entries.async_unload_platforms(
+        entry, (entry.options["template_type"],)
+    )
+
+
+async def _process_config(hass: HomeAssistant, hass_config: ConfigType) -> None:
     """Process config."""
     coordinators: list[TriggerUpdateCoordinator] | None = hass.data.pop(DOMAIN, None)
 
@@ -112,6 +134,7 @@ class TriggerUpdateCoordinator(update_coordinator.DataUpdateCoordinator):
         self.config = config
         self._unsub_start: Callable[[], None] | None = None
         self._unsub_trigger: Callable[[], None] | None = None
+        self._script: Script | None = None
 
     @property
     def unique_id(self) -> str | None:
@@ -126,7 +149,7 @@ class TriggerUpdateCoordinator(update_coordinator.DataUpdateCoordinator):
         if self._unsub_trigger:
             self._unsub_trigger()
 
-    async def async_setup(self: HomeAssistant, hass_config: ConfigType) -> bool:
+    async def async_setup(self, hass_config: ConfigType) -> None:
         """Set up the trigger and create entities."""
         if self.hass.state == CoreState.running:
             await self._attach_triggers()
@@ -149,6 +172,14 @@ class TriggerUpdateCoordinator(update_coordinator.DataUpdateCoordinator):
 
     async def _attach_triggers(self, start_event=None) -> None:
         """Attach the triggers."""
+        if CONF_ACTION in self.config:
+            self._script = Script(
+                self.hass,
+                self.config[CONF_ACTION],
+                self.name,
+                DOMAIN,
+            )
+
         if start_event is not None:
             self._unsub_start = None
 
@@ -162,8 +193,11 @@ class TriggerUpdateCoordinator(update_coordinator.DataUpdateCoordinator):
             start_event is not None,
         )
 
-    @callback
-    def _handle_triggered(self, run_variables, context=None):
+    async def _handle_triggered(self, run_variables, context=None):
+        if self._script:
+            script_result = await self._script.async_run(run_variables, context)
+            if script_result:
+                run_variables = script_result.variables
         self.async_set_updated_data(
             {"run_variables": run_variables, "context": context}
         )

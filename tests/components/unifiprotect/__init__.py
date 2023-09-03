@@ -3,11 +3,13 @@
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from unifi_discovery import AIOUnifiScanner, UnifiDevice, UnifiService
 
 DEVICE_HOSTNAME = "unvr"
 DEVICE_IP_ADDRESS = "127.0.0.1"
 DEVICE_MAC_ADDRESS = "aa:bb:cc:dd:ee:ff"
+DIRECT_CONNECT_DOMAIN = "x.ui.direct"
 
 
 UNIFI_DISCOVERY = UnifiDevice(
@@ -16,7 +18,7 @@ UNIFI_DISCOVERY = UnifiDevice(
     platform=DEVICE_HOSTNAME,
     hostname=DEVICE_HOSTNAME,
     services={UnifiService.Protect: True},
-    direct_connect_domain="x.ui.direct",
+    direct_connect_domain=DIRECT_CONNECT_DOMAIN,
 )
 
 
@@ -25,6 +27,8 @@ UNIFI_DISCOVERY_PARTIAL = UnifiDevice(
     hw_addr=DEVICE_MAC_ADDRESS,
     services={UnifiService.Protect: True},
 )
+
+pytest.register_assert_rewrite("tests.components.unifiprotect.utils")
 
 
 def _patch_discovery(device=None, no_device=False):

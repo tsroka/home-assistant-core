@@ -14,10 +14,10 @@ from homeassistant.components.sensor import (
 from homeassistant.const import (
     CONF_API_VERSION,
     CONF_NAME,
+    CONF_UNIQUE_ID,
     CONF_UNIT_OF_MEASUREMENT,
     CONF_VALUE_TEMPLATE,
     EVENT_HOMEASSISTANT_STOP,
-    STATE_UNKNOWN,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady, TemplateError
@@ -82,7 +82,8 @@ def validate_query_format_for_version(conf: dict) -> dict:
     if conf[CONF_API_VERSION] == API_VERSION_2:
         if CONF_QUERIES_FLUX not in conf:
             raise vol.Invalid(
-                f"{CONF_QUERIES_FLUX} is required when {CONF_API_VERSION} is {API_VERSION_2}"
+                f"{CONF_QUERIES_FLUX} is required when {CONF_API_VERSION} is"
+                f" {API_VERSION_2}"
             )
 
         for query in conf[CONF_QUERIES_FLUX]:
@@ -94,7 +95,8 @@ def validate_query_format_for_version(conf: dict) -> dict:
     else:
         if CONF_QUERIES not in conf:
             raise vol.Invalid(
-                f"{CONF_QUERIES} is required when {CONF_API_VERSION} is {DEFAULT_API_VERSION}"
+                f"{CONF_QUERIES} is required when {CONF_API_VERSION} is"
+                f" {DEFAULT_API_VERSION}"
             )
 
         for query in conf[CONF_QUERIES]:
@@ -109,6 +111,7 @@ def validate_query_format_for_version(conf: dict) -> dict:
 _QUERY_SENSOR_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME): cv.string,
+        vol.Optional(CONF_UNIQUE_ID): cv.string,
         vol.Optional(CONF_VALUE_TEMPLATE): cv.template,
         vol.Optional(CONF_UNIT_OF_MEASUREMENT): cv.string,
     }
@@ -198,6 +201,7 @@ class InfluxSensor(SensorEntity):
             self._value_template = None
         self._state = None
         self._hass = hass
+        self._attr_unique_id = query.get(CONF_UNIQUE_ID)
 
         if query[CONF_LANGUAGE] == LANGUAGE_FLUX:
             query_clause = query.get(CONF_QUERY)
@@ -239,14 +243,14 @@ class InfluxSensor(SensorEntity):
         """Return the unit of measurement of this entity, if any."""
         return self._unit_of_measurement
 
-    def update(self):
+    def update(self) -> None:
         """Get the latest data from Influxdb and updates the states."""
         self.data.update()
         if (value := self.data.value) is None:
-            value = STATE_UNKNOWN
+            value = None
         if self._value_template is not None:
             value = self._value_template.render_with_possible_json_value(
-                str(value), STATE_UNKNOWN
+                str(value), None
             )
 
         self._state = value
@@ -267,7 +271,10 @@ class InfluxFluxSensorData:
         self.value = None
         self.full_query = None
 
-        self.query_prefix = f'from(bucket:"{bucket}") |> range(start: {range_start}, stop: {range_stop}) |>'
+        self.query_prefix = (
+            f'from(bucket:"{bucket}") |> range(start: {range_start}, stop:'
+            f" {range_stop}) |>"
+        )
         if imports is not None:
             for i in imports:
                 self.query_prefix = f'import "{i}" {self.query_prefix}'
@@ -331,7 +338,10 @@ class InfluxQLSensorData:
             _LOGGER.error(RENDERING_WHERE_ERROR_MESSAGE, ex)
             return
 
-        self.query = f"select {self.group}({self.field}) as {INFLUX_CONF_VALUE} from {self.measurement} where {where_clause}"
+        self.query = (
+            f"select {self.group}({self.field}) as {INFLUX_CONF_VALUE} from"  # noqa: S608
+            f" {self.measurement} where {where_clause}"
+        )
 
         _LOGGER.debug(RUNNING_QUERY_MESSAGE, self.query)
 
