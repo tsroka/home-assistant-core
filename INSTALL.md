@@ -1,8 +1,12 @@
 # Install instructions
 
 Build
-`docker buildx build --platform linux/arm/v7 -t home-assistant-rts -f Dockerfile.quick .`
+`docker buildx build --platform linux/arm64/v8 -t unimatrix-0.local/home-assistant-rts -f Dockerfile.quick .`
 
+Push:
+`docker push unimatrix-0.local/home-assistant-rts`
+
+## Save restore
 Save
 `docker save home-assistant-rts  > home-assistant-rts.tar && scp -v  home-assistant-rts.tar pi@darkmate.local:`
 
