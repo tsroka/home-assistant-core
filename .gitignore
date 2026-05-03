@@ -127,6 +127,7 @@ desktop.ini
 
 # Secrets
 .lokalise_token
+darkmate_home-assistant_v2.sqlite
 
 # monkeytype
 monkeytype.sqlite3
